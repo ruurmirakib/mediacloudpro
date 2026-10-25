@@ -9,7 +9,6 @@ function entryResolverPlugin(): Plugin {
     name: 'entry-resolver-fallback',
     enforce: 'pre',
     resolveId(source) {
-      // Normalize source
       if (
         source === '/src/main.tsx' ||
         source === './src/main.tsx' ||
@@ -36,7 +35,7 @@ function entryResolverPlugin(): Plugin {
 
 export default defineConfig(() => {
   return {
-    base: './',
+    base: '/',
     plugins: [entryResolverPlugin(), react(), tailwindcss()],
     resolve: {
       alias: {

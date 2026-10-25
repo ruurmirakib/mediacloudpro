@@ -15,10 +15,12 @@ const PORT = Number(process.env.PORT) || 3000;
 
 app.use(express.json());
 
-const ROOT_DIR = process.cwd();
+const ROOT_DIR = __dirname || process.cwd();
 const DATA_DIR = path.resolve(ROOT_DIR, 'data');
 const USERS_FILE = path.resolve(DATA_DIR, 'users.json');
-const DIST_DIR = path.resolve(ROOT_DIR, 'dist');
+const DIST_DIR = fs.existsSync(path.resolve(__dirname, 'dist'))
+  ? path.resolve(__dirname, 'dist')
+  : path.resolve(process.cwd(), 'dist');
 
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -79,7 +81,7 @@ app.get('/api/admin/database/backup', (req, res) => {
       version: '1.0.0',
       exportedAt: new Date().toISOString(),
       superAdmin: 'ruurmirakib@gmail.com',
-      system: 'Mediya Cloud Pro Server Database',
+      system: 'Media Cloud Pro Server Database',
       totalUsers: users.length,
       users: users.map(u => ({
         id: u.id,
@@ -159,7 +161,7 @@ app.post('/api/users/register', (req, res) => {
     users.push(newUser);
     writeUsers(users);
 
-    console.log(`[Mediya Cloud Pro Vault] New account registered & saved to Admin Portal: ${newUser.email}`);
+    console.log(`[Media Cloud Pro Vault] New account registered & saved to Admin Portal: ${newUser.email}`);
 
     res.json({
       success: true,
@@ -252,17 +254,25 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    app.use(express.static(DIST_DIR));
+    if (fs.existsSync(DIST_DIR)) {
+      app.use(express.static(DIST_DIR));
+    }
     app.get('*', (req, res) => {
-      res.sendFile(path.resolve(DIST_DIR, 'index.html'));
+      const distIndex = path.resolve(DIST_DIR, 'index.html');
+      if (fs.existsSync(distIndex)) {
+        res.sendFile(distIndex);
+      } else {
+        const rootIndex = path.resolve(__dirname, 'index.html');
+        res.sendFile(rootIndex);
+      }
     });
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`[Mediya Cloud Pro Engine] Server active on http://0.0.0.0:${PORT}`);
+    console.log(`[Media Cloud Pro Engine] Server active on http://0.0.0.0:${PORT}`);
   });
 }
 
 startServer().catch((err) => {
-  console.error('[Mediya Cloud Pro Engine] Failed to start server:', err);
+  console.error('[Media Cloud Pro Engine] Failed to start server:', err);
 });
