@@ -1,0 +1,954 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mediya Cloud Pro - Unlimited Cloud Storage &amp; Admin Vault</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+    body {
+      font-family: 'Inter', sans-serif;
+      background-color: #141518;
+      color: #f4f4f5;
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+    }
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #141518;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #27272a;
+      border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #3f3f46;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef, useMemo } = React;
+
+    // Super Admin Email (Only this account has access to Admin Portal & Password Vault)
+    const SUPER_ADMIN_EMAIL = 'ruurmirakib@gmail.com';
+
+    function formatBytes(bytes, decimals = 2) {
+      if (!bytes || bytes === 0) return '0 B';
+      const k = 1024;
+      const dm = decimals < 0 ? 0 : decimals;
+      const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+    }
+
+    function generateKey() {
+      const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+      let res = 'RMD';
+      for (let s = 0; s < 4; s++) {
+        let seg = '';
+        for (let c = 0; c < 4; c++) seg += chars.charAt(Math.floor(Math.random() * chars.length));
+        res += '-' + seg;
+      }
+      return res;
+    }
+
+    // Default Media Files (Starts empty at 0 bytes)
+    const INITIAL_FILES = [];
+
+    function App() {
+      // User State: Completely clean by default. No pre-existing account is logged in!
+      const [currentUser, setCurrentUser] = useState(() => {
+        const stored = localStorage.getItem('rmedia_standalone_user');
+        if (stored) {
+          try {
+            const u = JSON.parse(stored);
+            // Clean up any legacy test accounts
+            if (u && u.id !== 'user-root-admin' && u.id !== 'admin-root') {
+              return u;
+            }
+            localStorage.removeItem('rmedia_standalone_user');
+          } catch (e) {}
+        }
+        return null;
+      });
+
+      // Registered Accounts Vault: Starts completely empty (0 accounts). Accounts will be added when created!
+      const [accountsVault, setAccountsVault] = useState(() => {
+        const stored = localStorage.getItem('rmedia_accounts_vault');
+        if (stored) {
+          try {
+            const parsed = JSON.parse(stored);
+            if (Array.isArray(parsed)) {
+              // Strip any legacy mock entries
+              return parsed.filter(a => a.id !== 'admin-root' && a.id !== 'user-root-admin');
+            }
+          } catch (e) {}
+        }
+        return [];
+      });
+
+      // Persist Accounts Vault
+      useEffect(() => {
+        localStorage.setItem('rmedia_accounts_vault', JSON.stringify(accountsVault));
+      }, [accountsVault]);
+
+      // Persist User Session
+      useEffect(() => {
+        if (currentUser) {
+          localStorage.setItem('rmedia_standalone_user', JSON.stringify(currentUser));
+        } else {
+          localStorage.removeItem('rmedia_standalone_user');
+        }
+      }, [currentUser]);
+
+      // Check if logged in user is Super Admin (strictly ruurmirakib@gmail.com)
+      const isAdmin = currentUser && currentUser.email.toLowerCase() === SUPER_ADMIN_EMAIL.toLowerCase();
+
+      // Files State (Starts completely empty at 0 B, purges mock files)
+      const [files, setFiles] = useState(() => {
+        const stored = localStorage.getItem('rmedia_standalone_files');
+        if (stored) {
+          try {
+            const parsed = JSON.parse(stored);
+            if (Array.isArray(parsed)) {
+              const mockIds = new Set(['file-1', 'file-2', 'file-3', 'file-4', 'file-5', 'file-6', 'file-7']);
+              return parsed.filter(f => !mockIds.has(f.id));
+            }
+          } catch (e) {}
+        }
+        return [];
+      });
+
+      useEffect(() => {
+        localStorage.setItem('rmedia_standalone_files', JSON.stringify(files));
+      }, [files]);
+
+      const [searchQuery, setSearchQuery] = useState('');
+      const [activeTab, setActiveTab] = useState('drive');
+      const [viewMode, setViewMode] = useState('grid');
+      
+      // Modals
+      const [isAuthOpen, setIsAuthOpen] = useState(false);
+      const [authMode, setAuthMode] = useState('login'); // default to login
+      const [isAdminPortalOpen, setIsAdminPortalOpen] = useState(false);
+      const [isBackupOpen, setIsBackupOpen] = useState(false);
+      const [previewFile, setPreviewFile] = useState(null);
+      const [selectedShareFile, setSelectedShareFile] = useState(null);
+
+      // Auth form
+      const [regName, setRegName] = useState('');
+      const [regEmail, setRegEmail] = useState('');
+      const [regPassword, setRegPassword] = useState('');
+      const [authError, setAuthError] = useState('');
+      const [createdKey, setCreatedKey] = useState('');
+
+      // Admin portal controls
+      const [portalSearch, setPortalSearch] = useState('');
+      const [showPasswords, setShowPasswords] = useState({});
+      const [copiedId, setCopiedId] = useState('');
+
+      const fileInputRef = useRef(null);
+
+      const totalUsedBytes = useMemo(() => {
+        return files.reduce((acc, f) => acc + (f.size || 0), 0);
+      }, [files]);
+
+      // Filtered files
+      const displayFiles = useMemo(() => {
+        let list = [...files];
+        if (activeTab === 'media') {
+          list = list.filter(f => f.type === 'image' || f.type === 'video');
+        } else if (activeTab === 'audio') {
+          list = list.filter(f => f.type === 'audio');
+        } else if (activeTab === 'starred') {
+          list = list.filter(f => f.starred);
+        }
+
+        if (searchQuery.trim()) {
+          const q = searchQuery.toLowerCase();
+          list = list.filter(f => f.name.toLowerCase().includes(q));
+        }
+        return list;
+      }, [files, activeTab, searchQuery]);
+
+      // Register handler: Called when user creates account
+      const handleRegister = (e) => {
+        e.preventDefault();
+        setAuthError('');
+        const emailClean = regEmail.trim().toLowerCase();
+        if (!emailClean.includes('@')) {
+          setAuthError('Please enter a valid Gmail / Email address.');
+          return;
+        }
+        if (regPassword.length < 4) {
+          setAuthError('Password must be at least 4 characters.');
+          return;
+        }
+        if (accountsVault.some(a => a.email.toLowerCase() === emailClean)) {
+          setAuthError('An account already exists for this email. Please Log In.');
+          return;
+        }
+
+        const newKey = generateKey();
+        const newAcc = {
+          id: 'user-' + Date.now(),
+          name: regName.trim() || emailClean.split('@')[0],
+          email: emailClean,
+          password: regPassword,
+          masterKey: newKey,
+          createdAt: new Date().toISOString()
+        };
+
+        const updatedVault = [...accountsVault, newAcc];
+        setAccountsVault(updatedVault);
+        setCurrentUser(newAcc);
+        setCreatedKey(newKey);
+        setRegName('');
+        setRegEmail('');
+        setRegPassword('');
+      };
+
+      // Login handler: Called when user logs in with email and password
+      const handleLogin = (e) => {
+        e.preventDefault();
+        setAuthError('');
+        const emailClean = regEmail.trim().toLowerCase();
+        const found = accountsVault.find(a => a.email.toLowerCase() === emailClean);
+        if (!found) {
+          setAuthError('No account found for this email. Please click "Create Account".');
+          return;
+        }
+        if (found.password !== regPassword) {
+          setAuthError('Incorrect password. Please verify your password.');
+          return;
+        }
+        setCurrentUser(found);
+        setIsAuthOpen(false);
+        setRegEmail('');
+        setRegPassword('');
+      };
+
+      // File upload handler
+      const handleFileUpload = (e) => {
+        const uploaded = Array.from(e.target.files);
+        if (uploaded.length === 0) return;
+
+        const newItems = uploaded.map(file => {
+          let type = 'other';
+          if (file.type.startsWith('image/')) type = 'image';
+          else if (file.type.startsWith('video/')) type = 'video';
+          else if (file.type.startsWith('audio/')) type = 'audio';
+
+          return {
+            id: 'file-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
+            name: file.name,
+            size: file.size,
+            type,
+            extension: file.name.split('.').pop() || 'dat',
+            createdAt: new Date().toISOString(),
+            previewUrl: (type === 'image' || type === 'video' || type === 'audio') ? URL.createObjectURL(file) : null
+          };
+        });
+
+        setFiles(prev => [...newItems, ...prev]);
+      };
+
+      const copyText = (txt, id) => {
+        navigator.clipboard.writeText(txt);
+        setCopiedId(id);
+        setTimeout(() => setCopiedId(''), 2000);
+      };
+
+      return (
+        <div className="flex h-screen w-screen overflow-hidden select-none bg-[#141518]">
+          <input
+            type="file"
+            multiple
+            ref={fileInputRef}
+            onChange={handleFileUpload}
+            className="hidden"
+          />
+
+          {/* SIDEBAR */}
+          <aside className="w-64 bg-[#111215] border-r border-zinc-800 flex flex-col justify-between p-4">
+            <div>
+              {/* Brand Header */}
+              <div className="flex items-center gap-3 pb-4 border-b border-zinc-800">
+                <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-red-600 to-rose-500 flex items-center justify-center font-black text-white text-xl shadow-lg shadow-red-600/30">
+                  M
+                </div>
+                <div>
+                  <div className="flex items-center gap-1.5 font-bold text-white text-sm">
+                    <span>MEDIYA CLOUD PRO</span>
+                  </div>
+                  <div className="text-[11px] text-zinc-400 flex items-center gap-1">
+                    <span className="text-emerald-400">●</span> Unlimited Cloud
+                  </div>
+                </div>
+              </div>
+
+              {/* User Session Bar in Sidebar */}
+              <div className="my-3 p-2.5 bg-[#18191d] rounded-xl border border-zinc-800/80 text-xs">
+                {currentUser ? (
+                  <div className="flex items-center justify-between">
+                    <div className="truncate mr-2">
+                      <div className="font-semibold text-white truncate flex items-center gap-1">
+                        <span>{currentUser.name}</span>
+                        {isAdmin && <span className="text-[9px] bg-red-600 text-white px-1.5 py-0.5 rounded font-bold">ADMIN</span>}
+                      </div>
+                      <div className="text-[10px] text-zinc-400 truncate">{currentUser.email}</div>
+                    </div>
+                    <button
+                      onClick={() => setCurrentUser(null)}
+                      title="Log Out of session"
+                      className="text-[11px] text-rose-400 hover:text-rose-300 px-2 py-1 bg-rose-950/30 border border-rose-500/20 rounded-lg cursor-pointer transition font-medium"
+                    >
+                      Log Out
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <div className="text-[11px] text-zinc-400 flex items-center justify-between">
+                      <span>Status: <strong className="text-zinc-300">Not Logged In</strong></span>
+                      <span className="text-[10px] text-zinc-500 font-mono">Guest</span>
+                    </div>
+                    <button
+                      onClick={() => {
+                        setAuthMode('login');
+                        setAuthError('');
+                        setIsAuthOpen(true);
+                      }}
+                      className="w-full py-2 bg-red-600 hover:bg-red-500 text-white font-bold text-xs rounded-xl text-center cursor-pointer transition shadow-md shadow-red-600/20 flex items-center justify-center gap-1.5"
+                    >
+                      <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+                      <span>Log In</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Upload Button */}
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="w-full mb-3 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold shadow-md shadow-red-600/30 flex items-center justify-center gap-2 cursor-pointer transition"
+              >
+                <span>Upload Files</span>
+              </button>
+
+              {/* Navigation Menu */}
+              <nav className="space-y-1 text-xs font-medium">
+                {[
+                  { id: 'drive', label: 'Cloud Drive' },
+                  { id: 'media', label: 'Photos & Videos' },
+                  { id: 'audio', label: 'Music & Audio' },
+                  { id: 'starred', label: 'Favourites' }
+                ].map(item => (
+                  <button
+                    key={item.id}
+                    onClick={() => setActiveTab(item.id)}
+                    className={`w-full text-left px-3 py-2 rounded-lg transition cursor-pointer ${
+                      activeTab === item.id ? 'bg-red-600/20 text-red-400 border border-red-500/30' : 'text-zinc-400 hover:text-white hover:bg-zinc-800/60'
+                    }`}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+
+                {/* Database Backup: STRICTLY ONLY FOR ruurmirakib@gmail.com */}
+                {isAdmin && (
+                  <button
+                    onClick={() => setIsBackupOpen(true)}
+                    className="w-full text-left px-3 py-2 rounded-lg text-emerald-400 hover:bg-emerald-950/20 border border-emerald-500/20 transition cursor-pointer flex items-center justify-between"
+                  >
+                    <span>Database Backup Hub</span>
+                    <span className="text-[9px] bg-emerald-500/20 px-1 py-0.5 rounded font-mono">ROOT</span>
+                  </button>
+                )}
+
+                {/* Admin Password Vault: STRICTLY ONLY FOR ruurmirakib@gmail.com */}
+                {isAdmin && (
+                  <button
+                    onClick={() => setIsAdminPortalOpen(true)}
+                    className="w-full text-left px-3 py-2 rounded-lg text-red-400 bg-red-950/30 hover:bg-red-900/40 border border-red-500/40 transition cursor-pointer font-bold flex items-center justify-between mt-2"
+                  >
+                    <span>Admin Portal (Passwords)</span>
+                    <span className="text-[9px] bg-red-600 text-white px-1 py-0.5 rounded">VAULT</span>
+                  </button>
+                )}
+              </nav>
+            </div>
+
+            {/* Storage Gauge: UNLIMITED */}
+            <div className="bg-[#18191d] p-3 rounded-2xl border border-zinc-800 text-xs">
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="font-semibold text-zinc-300">Cloud Storage</span>
+                <span className="text-emerald-400 font-bold">∞ Unlimited</span>
+              </div>
+              <div className="w-full bg-zinc-800 h-2 rounded-full overflow-hidden mb-1.5">
+                <div className="bg-gradient-to-r from-red-500 via-amber-400 to-emerald-400 h-full w-full rounded-full animate-pulse"></div>
+              </div>
+              <div className="flex justify-between text-[11px] text-zinc-400">
+                <span>{formatBytes(totalUsedBytes)} used</span>
+                <span className="text-emerald-400">No limits</span>
+              </div>
+            </div>
+          </aside>
+
+          {/* MAIN WORKSPACE */}
+          <div className="flex-1 flex flex-col h-screen overflow-hidden">
+            {/* Header */}
+            <header className="h-16 bg-[#18191c] border-b border-zinc-800 px-6 flex items-center justify-between">
+              <input
+                type="text"
+                placeholder="Search files in Mediya Cloud Pro..."
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                className="w-80 bg-[#111215] border border-zinc-700/80 rounded-xl px-3.5 py-2 text-xs text-white outline-none focus:border-red-500"
+              />
+
+              <div className="flex items-center gap-3">
+                <div className="flex items-center bg-[#111215] border border-zinc-800 rounded-xl p-0.5 text-xs">
+                  <button
+                    onClick={() => setViewMode('grid')}
+                    className={`px-3 py-1.5 rounded-lg cursor-pointer ${viewMode === 'grid' ? 'bg-zinc-800 text-white' : 'text-zinc-400'}`}
+                  >
+                    Grid
+                  </button>
+                  <button
+                    onClick={() => setViewMode('list')}
+                    className={`px-3 py-1.5 rounded-lg cursor-pointer ${viewMode === 'list' ? 'bg-zinc-800 text-white' : 'text-zinc-400'}`}
+                  >
+                    List
+                  </button>
+                </div>
+
+                {/* If Logged In: Show profile chip, Admin Portal (if admin), and Log Out */}
+                {currentUser ? (
+                  <div className="flex items-center gap-2">
+                    {isAdmin && (
+                      <button
+                        onClick={() => setIsAdminPortalOpen(true)}
+                        className="px-3.5 py-1.5 bg-red-600 hover:bg-red-500 text-white text-xs font-bold rounded-xl transition shadow-md shadow-red-600/30 cursor-pointer"
+                      >
+                        Admin Portal
+                      </button>
+                    )}
+                    <div className="flex items-center gap-2 bg-[#111215] border border-zinc-800 px-3 py-1.5 rounded-xl text-xs">
+                      <div className={`w-6 h-6 rounded-lg text-white flex items-center justify-center font-bold text-xs ${isAdmin ? 'bg-red-600' : 'bg-zinc-700'}`}>
+                        {currentUser.name.charAt(0).toUpperCase()}
+                      </div>
+                      <span className="font-semibold text-white max-w-[120px] truncate">{currentUser.name}</span>
+                    </div>
+                    <button
+                      onClick={() => setCurrentUser(null)}
+                      className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-rose-400 hover:text-rose-300 border border-zinc-700/80 rounded-xl text-xs font-semibold cursor-pointer transition"
+                    >
+                      Log Out
+                    </button>
+                  </div>
+                ) : (
+                  /* If Not Logged In: Clearly show BOTH "Log In" and "Create Account" buttons */
+                  <button
+                    onClick={() => {
+                      setAuthMode('login');
+                      setAuthError('');
+                      setIsAuthOpen(true);
+                    }}
+                    className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white text-xs font-bold rounded-xl shadow-md shadow-red-600/30 cursor-pointer transition flex items-center gap-1.5"
+                  >
+                    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+                    <span>Log In</span>
+                  </button>
+                )}
+              </div>
+            </header>
+
+            {/* Breadcrumb / Title Bar */}
+            <div className="h-10 bg-[#151619] border-b border-zinc-800/80 px-6 flex items-center justify-between text-xs text-zinc-400">
+              <div className="font-semibold text-white uppercase tracking-wider">
+                {activeTab.toUpperCase()} ({displayFiles.length} items)
+              </div>
+              <div className="text-[11px] font-mono text-zinc-400">
+                Total: {formatBytes(displayFiles.reduce((a, b) => a + b.size, 0))}
+              </div>
+            </div>
+
+            {/* File List / Grid */}
+            <div className="flex-1 overflow-y-auto p-6 bg-[#141518]">
+              {displayFiles.length === 0 ? (
+                <div className="py-24 text-center border-2 border-dashed border-zinc-800 rounded-3xl">
+                  <h3 className="text-sm font-semibold text-zinc-300">No files found</h3>
+                  <p className="text-xs text-zinc-500 mt-1">Upload a video, photo or soundtrack to get started.</p>
+                </div>
+              ) : viewMode === 'grid' ? (
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+                  {displayFiles.map(file => (
+                    <div
+                      key={file.id}
+                      onDoubleClick={() => setPreviewFile(file)}
+                      className="bg-[#1c1d21] hover:bg-[#23242a] border border-zinc-800 hover:border-zinc-700 rounded-2xl overflow-hidden flex flex-col transition cursor-pointer group shadow-sm"
+                    >
+                      <div className="h-32 bg-black/40 flex items-center justify-center relative overflow-hidden">
+                        {file.type === 'image' && file.previewUrl ? (
+                          <img src={file.previewUrl} className="w-full h-full object-cover group-hover:scale-105 transition" />
+                        ) : file.type === 'video' && file.previewUrl ? (
+                          <video src={file.previewUrl} className="w-full h-full object-cover" muted playsInline />
+                        ) : (
+                          <span className="text-xs font-mono font-bold uppercase text-red-400">.{file.extension}</span>
+                        )}
+                        <span className="absolute top-2 left-2 text-[10px] bg-black/60 px-1.5 py-0.5 rounded font-mono text-red-300">
+                          E2EE
+                        </span>
+                      </div>
+                      <div className="p-3">
+                        <div className="text-xs font-semibold text-zinc-200 truncate group-hover:text-white" title={file.name}>
+                          {file.name}
+                        </div>
+                        <div className="flex justify-between items-center text-[11px] text-zinc-400 mt-1">
+                          <span>{formatBytes(file.size)}</span>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedShareFile(file);
+                            }}
+                            className="text-red-400 hover:underline cursor-pointer"
+                          >
+                            Share Link
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <table className="w-full text-left text-xs text-zinc-300">
+                  <thead>
+                    <tr className="border-b border-zinc-800 text-zinc-500 font-semibold pb-2">
+                      <th className="pb-2">Name</th>
+                      <th className="pb-2">Size</th>
+                      <th className="pb-2">Type</th>
+                      <th className="pb-2 text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-zinc-800/60 font-mono">
+                    {displayFiles.map(file => (
+                      <tr key={file.id} onDoubleClick={() => setPreviewFile(file)} className="hover:bg-zinc-850 cursor-pointer">
+                        <td className="py-2.5 font-sans font-semibold text-white">{file.name}</td>
+                        <td className="py-2.5 text-zinc-400">{formatBytes(file.size)}</td>
+                        <td className="py-2.5 text-zinc-400 uppercase">.{file.extension}</td>
+                        <td className="py-2.5 text-right font-sans">
+                          <button
+                            onClick={() => setSelectedShareFile(file)}
+                            className="text-red-400 hover:underline mr-3"
+                          >
+                            Get Link
+                          </button>
+                          <button
+                            onClick={() => setPreviewFile(file)}
+                            className="text-zinc-300 hover:text-white"
+                          >
+                            Preview
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+
+          {/* AUTH MODAL (LOGIN & SIGN UP) */}
+          {isAuthOpen && (
+            <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <div className="bg-[#18191d] border border-zinc-700 rounded-3xl w-full max-w-md p-6 shadow-2xl relative">
+                <button onClick={() => setIsAuthOpen(false)} className="absolute top-4 right-4 text-zinc-400 hover:text-white">✕</button>
+
+                <div className="text-center mb-4">
+                  <div className="w-12 h-12 rounded-2xl bg-red-600 flex items-center justify-center font-black text-2xl text-white mx-auto mb-2">M</div>
+                  <h3 className="text-base font-bold text-white">Mediya Cloud Pro Account</h3>
+                  <p className="text-xs text-zinc-400">Unlimited storage with zero-knowledge encryption</p>
+                </div>
+
+                {createdKey ? (
+                  <div className="text-center space-y-3">
+                    <div className="text-emerald-400 font-bold text-sm">Account Created Successfully!</div>
+                    <p className="text-xs text-zinc-400">Save this 24-character Master Recovery Key:</p>
+                    <div className="p-3 bg-black/60 rounded-xl font-mono text-red-400 font-bold text-xs break-all select-all border border-zinc-800">
+                      {createdKey}
+                    </div>
+                    <button
+                      onClick={() => {
+                        setIsAuthOpen(false);
+                        setCreatedKey('');
+                      }}
+                      className="w-full py-2.5 bg-red-600 text-white rounded-xl font-bold text-xs cursor-pointer"
+                    >
+                      Enter Cloud Drive
+                    </button>
+                  </div>
+                ) : (
+                  <div>
+                    {/* Log In & Create Account Tabs */}
+                    <div className="flex bg-zinc-900 p-1 rounded-xl mb-4 border border-zinc-800 text-xs">
+                      <button
+                        onClick={() => { setAuthMode('login'); setAuthError(''); }}
+                        className={`flex-1 py-1.5 rounded-lg font-semibold transition cursor-pointer ${authMode === 'login' ? 'bg-red-600 text-white shadow-sm' : 'text-zinc-400 hover:text-white'}`}
+                      >
+                        Log In
+                      </button>
+                      <button
+                        onClick={() => { setAuthMode('register'); setAuthError(''); }}
+                        className={`flex-1 py-1.5 rounded-lg font-semibold transition cursor-pointer ${authMode === 'register' ? 'bg-red-600 text-white shadow-sm' : 'text-zinc-400 hover:text-white'}`}
+                      >
+                        Create Account
+                      </button>
+                    </div>
+
+                    {authError && (
+                      <div className="mb-3 p-2.5 bg-rose-950/40 border border-rose-500/30 text-rose-300 rounded-xl text-xs">
+                        {authError}
+                      </div>
+                    )}
+
+                    <form onSubmit={authMode === 'register' ? handleRegister : handleLogin} className="space-y-3 text-xs">
+                      {authMode === 'register' && (
+                        <div>
+                          <label className="text-[11px] text-zinc-400 font-semibold block mb-1">Full Name</label>
+                          <input
+                            type="text"
+                            placeholder="e.g. Rakib"
+                            value={regName}
+                            onChange={e => setRegName(e.target.value)}
+                            className="w-full bg-[#121316] border border-zinc-700 rounded-xl px-3 py-2 text-white outline-none focus:border-red-500"
+                          />
+                        </div>
+                      )}
+
+                      <div>
+                        <label className="text-[11px] text-zinc-400 font-semibold block mb-1">Gmail / Email</label>
+                        <input
+                          type="email"
+                          required
+                          placeholder="e.g. user@gmail.com"
+                          value={regEmail}
+                          onChange={e => setRegEmail(e.target.value)}
+                          className="w-full bg-[#121316] border border-zinc-700 rounded-xl px-3 py-2 text-white outline-none focus:border-red-500"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="text-[11px] text-zinc-400 font-semibold block mb-1">Password</label>
+                        <input
+                          type="password"
+                          required
+                          placeholder="At least 4 characters"
+                          value={regPassword}
+                          onChange={e => setRegPassword(e.target.value)}
+                          className="w-full bg-[#121316] border border-zinc-700 rounded-xl px-3 py-2 text-white outline-none focus:border-red-500"
+                        />
+                      </div>
+
+                      <button
+                        type="submit"
+                        className="w-full mt-2 py-2.5 bg-red-600 hover:bg-red-500 text-white font-bold rounded-xl shadow-lg shadow-red-600/30 cursor-pointer transition"
+                      >
+                        {authMode === 'register' ? 'Create Free Unlimited Account' : 'Log In to Mediya Cloud Pro'}
+                      </button>
+
+                      <div className="text-center pt-2 text-[11px] text-zinc-400">
+                        {authMode === 'login' ? (
+                          <span>
+                            Don't have an account yet?{' '}
+                            <button
+                              type="button"
+                              onClick={() => { setAuthMode('register'); setAuthError(''); }}
+                              className="text-red-400 hover:underline font-semibold cursor-pointer"
+                            >
+                              Create Account
+                            </button>
+                          </span>
+                        ) : (
+                          <span>
+                            Already have an account?{' '}
+                            <button
+                              type="button"
+                              onClick={() => { setAuthMode('login'); setAuthError(''); }}
+                              className="text-red-400 hover:underline font-semibold cursor-pointer"
+                            >
+                              Log In
+                            </button>
+                          </span>
+                        )}
+                      </div>
+                    </form>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ADMIN PORTAL: STRICTLY RESTRICTED TO ruurmirakib@gmail.com */}
+          {isAdminPortalOpen && (
+            <div className="fixed inset-0 bg-black/85 backdrop-blur-md z-50 flex items-center justify-center p-4">
+              <div className="bg-[#18191d] border border-red-500/40 rounded-3xl w-full max-w-4xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
+                <div className="p-5 bg-[#131417] border-b border-zinc-800 flex items-center justify-between">
+                  <div>
+                    <h3 className="text-base font-bold text-white flex items-center gap-2">
+                      <span>Mediya Cloud Pro Admin Portal &amp; Database Backup Vault</span>
+                      <span className="text-[10px] bg-red-600 text-white px-2 py-0.5 rounded-full font-bold">SUPER ADMIN ONLY</span>
+                    </h3>
+                    <p className="text-xs text-zinc-400">Real-time Gmail &amp; Password backup storage and Full Database Center for {SUPER_ADMIN_EMAIL}</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => {
+                        const dateStr = new Date().toISOString().slice(0, 10);
+                        const fullDb = {
+                          system: 'Mediya Cloud Pro Full Enterprise Database Backup',
+                          exportedAt: new Date().toISOString(),
+                          superAdmin: SUPER_ADMIN_EMAIL,
+                          totalAccounts: accountsVault.length,
+                          totalFiles: files.length,
+                          allAccounts: accountsVault,
+                          allFiles: files
+                        };
+                        const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(fullDb, null, 2));
+                        const a = document.createElement('a');
+                        a.href = dataStr;
+                        a.download = `MediyaCloud_Full_Database_Backup_${dateStr}_All_Users.json`;
+                        a.click();
+                      }}
+                      className="px-4 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 text-white rounded-xl text-xs font-bold shadow-md shadow-emerald-600/30 cursor-pointer flex items-center gap-1.5"
+                    >
+                      <span>Download All Database (JSON)</span>
+                    </button>
+                    <button onClick={() => setIsAdminPortalOpen(false)} className="text-zinc-400 hover:text-white text-lg ml-2">✕</button>
+                  </div>
+                </div>
+
+                <div className="p-4 bg-[#151619] border-b border-zinc-800 flex items-center justify-between text-xs">
+                  <div className="font-mono text-zinc-300">
+                    Total Registered Accounts in Database: <strong className="text-white font-bold">{accountsVault.length}</strong> | Files: <strong className="text-emerald-400 font-bold">{files.length}</strong>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => {
+                        let csv = 'Name,Gmail,Password_Backup,Master_Recovery_Key,Registration_Date\n';
+                        accountsVault.forEach(u => {
+                          csv += `"${u.name}","${u.email}","${u.password}","${u.masterKey}","${u.createdAt}"\n`;
+                        });
+                        const dataStr = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+                        const a = document.createElement('a');
+                        a.href = dataStr;
+                        a.download = `MediaCloud_Users_Passwords_${new Date().toISOString().slice(0, 10)}.csv`;
+                        a.click();
+                      }}
+                      className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-cyan-400 rounded-xl font-semibold cursor-pointer"
+                    >
+                      Export CSV
+                    </button>
+                    <button
+                      onClick={() => {
+                        const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(accountsVault, null, 2));
+                        const a = document.createElement('a');
+                        a.href = dataStr;
+                        a.download = `MediaCloud_Accounts_Vault_${new Date().toISOString().slice(0, 10)}.json`;
+                        a.click();
+                      }}
+                      className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-emerald-400 rounded-xl font-semibold cursor-pointer"
+                    >
+                      Export Accounts JSON
+                    </button>
+                  </div>
+                </div>
+
+                <div className="p-5 overflow-y-auto flex-1">
+                  <table className="w-full text-left text-xs text-zinc-300">
+                    <thead>
+                      <tr className="border-b border-zinc-800 text-[11px] uppercase tracking-wider text-zinc-500">
+                        <th className="pb-2">User Name</th>
+                        <th className="pb-2">Gmail Address</th>
+                        <th className="pb-2">Password Backup</th>
+                        <th className="pb-2">Master Key</th>
+                        <th className="pb-2">Date Created</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-zinc-800/60 font-mono text-[11px]">
+                      {accountsVault.length === 0 ? (
+                        <tr>
+                          <td colSpan="5" className="py-12 text-center text-zinc-500 font-sans">
+                            No accounts registered yet. When users create accounts on the website, their Gmail & Password backups will be stored and listed here.
+                          </td>
+                        </tr>
+                      ) : (
+                        accountsVault.map(acc => {
+                          const isVis = showPasswords[acc.id];
+                          const isAccAdmin = acc.email.toLowerCase() === SUPER_ADMIN_EMAIL.toLowerCase();
+                          return (
+                            <tr key={acc.id} className="hover:bg-zinc-850">
+                              <td className="py-3 font-sans font-semibold text-white">
+                                {acc.name} {isAccAdmin && <span className="text-[9px] bg-red-600/30 text-red-400 px-1 py-0.5 rounded font-mono">SUPER ADMIN</span>}
+                              </td>
+                              <td className="py-3">
+                                <span className="font-sans text-zinc-200 mr-2">{acc.email}</span>
+                                <button onClick={() => copyText(acc.email, 'em-' + acc.id)} className="text-[10px] text-zinc-400 hover:text-white cursor-pointer">
+                                  {copiedId === 'em-' + acc.id ? 'Copied!' : 'Copy'}
+                                </button>
+                              </td>
+                              <td className="py-3">
+                                <span className="text-amber-400 font-bold mr-2">
+                                  {isVis ? acc.password : '••••••••••••'}
+                                </span>
+                                <button
+                                  onClick={() => setShowPasswords(p => ({ ...p, [acc.id]: !p[acc.id] }))}
+                                  className="text-[10px] text-zinc-400 hover:text-white mr-2 cursor-pointer"
+                                >
+                                  {isVis ? 'Hide' : 'Show'}
+                                </button>
+                                <button onClick={() => copyText(acc.password, 'pw-' + acc.id)} className="text-[10px] text-zinc-400 hover:text-white cursor-pointer">
+                                  {copiedId === 'pw-' + acc.id ? 'Copied!' : 'Copy'}
+                                </button>
+                              </td>
+                              <td className="py-3 text-[10px] text-zinc-400">{acc.masterKey}</td>
+                              <td className="py-3 text-[10px] font-sans text-zinc-500">{new Date(acc.createdAt).toLocaleDateString()}</td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="p-4 bg-[#131417] border-t border-zinc-800 flex justify-end">
+                  <button onClick={() => setIsAdminPortalOpen(false)} className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-white rounded-xl text-xs font-semibold cursor-pointer">
+                    Close Portal
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* DATABASE BACKUP HUB */}
+          {isBackupOpen && (
+            <div className="fixed inset-0 bg-black/85 backdrop-blur-md z-50 flex items-center justify-center p-4">
+              <div className="bg-[#18191d] border border-emerald-500/40 rounded-3xl w-full max-w-2xl p-6 shadow-2xl relative text-xs">
+                <button onClick={() => setIsBackupOpen(false)} className="absolute top-4 right-4 text-zinc-400 hover:text-white text-base">✕</button>
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="w-10 h-10 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-bold text-lg">DB</div>
+                  <div>
+                    <h3 className="text-base font-bold text-white">Database Backup & Recovery Hub</h3>
+                    <p className="text-zinc-400 text-xs">Exclusive to Super Admin: {SUPER_ADMIN_EMAIL}</p>
+                  </div>
+                </div>
+
+                <div className="bg-[#121316] p-4 rounded-2xl border border-zinc-800 space-y-3 mb-4">
+                  <div className="flex justify-between items-center">
+                    <span className="text-zinc-400">Total Registered Accounts:</span>
+                    <strong className="text-white font-mono">{accountsVault.length}</strong>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-zinc-400">Total Files in Storage:</span>
+                    <strong className="text-white font-mono">{files.length}</strong>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-zinc-400">Storage Capacity:</span>
+                    <strong className="text-emerald-400 font-mono">Unlimited (∞)</strong>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-zinc-400">Database Status:</span>
+                    <span className="text-emerald-400 font-semibold">● Healthy & Active</span>
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => {
+                    const fullDb = {
+                      timestamp: new Date().toISOString(),
+                      admin: SUPER_ADMIN_EMAIL,
+                      accounts: accountsVault,
+                      files: files
+                    };
+                    const blob = new Blob([JSON.stringify(fullDb, null, 2)], { type: 'application/json' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `rmedia_full_database_backup_${Date.now()}.json`;
+                    a.click();
+                  }}
+                  className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl cursor-pointer transition shadow-md shadow-emerald-600/20"
+                >
+                  Download Complete Database Backup (.JSON)
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* PREVIEW MODAL */}
+          {previewFile && (
+            <div className="fixed inset-0 bg-black/90 backdrop-blur-md z-50 flex flex-col justify-between p-6">
+              <div className="flex justify-between items-center text-white pb-4 border-b border-zinc-800">
+                <span className="font-bold text-sm">{previewFile.name}</span>
+                <button onClick={() => setPreviewFile(null)} className="text-xl cursor-pointer">✕</button>
+              </div>
+              <div className="flex-1 flex items-center justify-center p-4">
+                {previewFile.type === 'image' && previewFile.previewUrl ? (
+                  <img src={previewFile.previewUrl} className="max-h-[75vh] max-w-[85vw] object-contain rounded-xl shadow-2xl" />
+                ) : previewFile.type === 'video' && previewFile.previewUrl ? (
+                  <video src={previewFile.previewUrl} controls autoPlay className="max-h-[75vh] max-w-4xl rounded-2xl shadow-2xl" />
+                ) : (
+                  <div className="bg-zinc-900 p-8 rounded-2xl text-center">
+                    <h4 className="text-white font-bold mb-2">{previewFile.name}</h4>
+                    <p className="text-xs text-zinc-400 mb-4">{formatBytes(previewFile.size)}</p>
+                    <a href={previewFile.previewUrl || '#'} download={previewFile.name} className="px-4 py-2 bg-red-600 text-white rounded-lg text-xs font-bold">
+                      Download File
+                    </a>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* SHARE LINK MODAL */}
+          {selectedShareFile && (
+            <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <div className="bg-[#18191d] border border-zinc-700 rounded-3xl w-full max-w-md p-6 shadow-2xl relative text-xs">
+                <button onClick={() => setSelectedShareFile(null)} className="absolute top-4 right-4 text-zinc-400 hover:text-white cursor-pointer">✕</button>
+                <h3 className="font-bold text-white text-sm mb-1">Encrypted Share Link</h3>
+                <p className="text-zinc-400 mb-4">{selectedShareFile.name}</p>
+                <div className="p-3 bg-black/60 rounded-xl font-mono text-red-400 break-all select-all border border-zinc-800 mb-4">
+                  {window.location.origin}/#file={selectedShareFile.id}#key=rmedia_{Math.random().toString(36).substring(2, 10)}
+                </div>
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(`${window.location.origin}/#file=${selectedShareFile.id}`);
+                    alert('Encrypted link copied to clipboard!');
+                    setSelectedShareFile(null);
+                  }}
+                  className="w-full py-2.5 bg-red-600 hover:bg-red-500 text-white font-bold rounded-xl cursor-pointer"
+                >
+                  Copy Encrypted Link
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    ReactDOM.render(<App />, document.getElementById('root'));
+  </script>
+</body>
+</html>
