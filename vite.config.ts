@@ -2,7 +2,11 @@ import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
 import fs from 'fs';
+import {fileURLToPath} from 'url';
 import {defineConfig, Plugin} from 'vite';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 function entryResolverPlugin(): Plugin {
   return {
@@ -19,11 +23,11 @@ function entryResolverPlugin(): Plugin {
         source === 'main.tsx' ||
         source.endsWith('/main.tsx')
       ) {
-        const srcMain = path.resolve(import.meta.dirname, 'src', 'main.tsx');
+        const srcMain = path.resolve(__dirname, 'src', 'main.tsx');
         if (fs.existsSync(srcMain)) {
           return srcMain;
         }
-        const rootMain = path.resolve(import.meta.dirname, 'main.tsx');
+        const rootMain = path.resolve(__dirname, 'main.tsx');
         if (fs.existsSync(rootMain)) {
           return rootMain;
         }
@@ -39,7 +43,7 @@ export default defineConfig(() => {
     plugins: [entryResolverPlugin(), react(), tailwindcss()],
     resolve: {
       alias: {
-        '@': path.resolve(import.meta.dirname, '.'),
+        '@': path.resolve(__dirname, '.'),
       },
     },
     server: {
